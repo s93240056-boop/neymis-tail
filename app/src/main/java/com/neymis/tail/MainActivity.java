@@ -35,7 +35,7 @@ public class MainActivity extends AppCompatActivity implements CommandEngine.Hos
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         prefs = getSharedPreferences("neymis_tail", MODE_PRIVATE);
-        applyTheme(prefs.getInt("theme", 0));
+        applyThemeOnly(prefs.getInt("theme", 0));
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
@@ -150,6 +150,12 @@ public class MainActivity extends AppCompatActivity implements CommandEngine.Hos
     @Override
     public void clear() {
         runOnUiThread(() -> output.setText(""));
+    }
+
+    private void applyThemeOnly(int theme) {
+        if (theme == 1) setTheme(R.style.AppTheme_Light);
+        else if (theme == 2) setTheme(R.style.AppTheme_Dark);
+        else setTheme(R.style.AppTheme);
     }
 
     @Override
