@@ -223,7 +223,7 @@ final class CommandEngine {
         List<String> parts = tokenize(line);
         String command = parts.get(0).toLowerCase();
 
-        if (command.equals("dir/s") || command.equals("dir", "/s")) {
+        if (command.equals("dir/s") || command.equals("dir /s")) {
             return dirsCascade();
         }
 
@@ -1174,7 +1174,8 @@ final class CommandEngine {
             long size = file.length();
             totalBytes += size;
             fileCount++;
-            String noise = symbols.charAt((int) (Math.abs(file.getName().hashCode()) % symbols.length()));
+            String noise = String.valueOf(symbols.charAt(
+                    (int) (Math.abs(file.getName().hashCode()) % symbols.length())));
             lines.add(String.format("%-28s %12d  %s  %s",
                     file.getName().substring(0, Math.min(28, file.getName().length())),
                     size, date.format(new Date(file.lastModified())), noise));
