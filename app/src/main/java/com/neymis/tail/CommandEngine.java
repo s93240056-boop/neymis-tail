@@ -561,22 +561,59 @@ final class CommandEngine {
 
     private String ping(List<String> args) throws IOException {
         String host = require(args, 0, "ping <хост>");
+        String systemPing = systemPing(host);
+        if (systemPing != null) return systemPing;
+        return javaPing(host);
+    }
+
+    private String systemPing(String host) {
+        try {
+            Process process = Runtime.getRuntime().exec(
+                    new String[]{"/system/bin/ping", "-c", "4", "-W", "2", host});
+            StringBuilder output = new StringBuilder();
+            try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append('\n');
+                }
+            }
+            int code = process.waitFor();
+            String text = output.toString().trim();
+            if (!text.isEmpty() && (text.contains("bytes from") || text.contains("Ответ"))) {
+                return text;
+            }
+            if (code == 0 && !text.isEmpty()) return text;
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private String javaPing(String host) {
         StringBuilder out = new StringBuilder("Ping " + host + ":\n");
         try {
             java.net.InetAddress address = java.net.InetAddress.getByName(host);
             out.append("Адрес: ").append(address.getHostAddress()).append('\n');
             for (int i = 0; i < 4; i++) {
                 long start = System.currentTimeMillis();
-                boolean reachable = address.isReachable(1500);
+                boolean reachable;
+                String note = "";
+                try {
+                    reachable = address.isReachable(1500);
+                } catch (Exception e) {
+                    reachable = false;
+                    note = " (нет ответа)";
+                }
                 long ms = System.currentTimeMillis() - start;
                 out.append(reachable ? "Ответ от " : "Таймаут: ")
                         .append(address.getHostAddress()).append(": ")
-                        .append(ms).append(" мс\n");
+                        .append(ms).append(" мс").append(note).append('\n');
             }
+            return out.toString().trim();
         } catch (Exception e) {
-            return "Ошибка: " + e.getMessage();
+            return "Не удалось разрешить хост: " + host
+                    + "\nПроверь интернет и написание адреса.";
         }
-        return out.toString().trim();
     }
 
     private String nslookup(List<String> args) throws IOException {
