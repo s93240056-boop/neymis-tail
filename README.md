@@ -22,8 +22,23 @@ console with phone-aware commands, written in Java, open source, offline.
 | `df`, `apps [filter]`, `date`, `whoami` | Device info |
 | `history`, `clear`, `echo`, `theme` | Shell controls |
 
+Additional CMD-style commands (what makes sense on Android):
+
+| Command | Description |
+|---|---|
+| `dir`, `md`, `rd`, `del`, `ren`, `type`, `findstr`, `cls` | CMD aliases |
+| `attrib <file>`, `where <name>` | Attributes and lookup |
+| `ipconfig [/all]`, `ping <host>`, `nslookup <domain>` | Network info and checks |
+| `netstat`, `arp`, `getmac`, `route` | Tables from `/proc/net` |
+| `tasklist`, `start <package>` | Processes and launching apps |
+| `vol`, `systeminfo`, `ver` | Device and storage info |
+| `color <0a\|0c\|0f>`, `set [NAME=value]`, `sleep <sec>`, `exit` | Console control |
+
 Features: command history with ↑/↓, Tab completion, coloured output, and a
 saved script feature (`run <file>` executes one command per line).
+
+Not implemented: Windows-only tools (sfc, dism, chkdsk, diskpart, sc, netsh,
+shutdown) — they require Windows APIs or root.
 
 ## Build
 

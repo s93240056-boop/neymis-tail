@@ -1,5 +1,6 @@
 package com.neymis.tail;
 
+import android.content.Context;
 import android.content.pm.ApplicationInfo;
 
 import java.io.File;
@@ -28,12 +29,17 @@ final class CommandEngine {
         void clear();
 
         void applyTheme(int theme);
+
+        void setColor(String code);
+
+        void exit();
     }
 
     private final Host host;
     private final File root;
     private File cwd;
     private final List<String> history = new ArrayList<>();
+    private final Map<String, String> env = new HashMap<>();
 
     private static final Map<String, String> HELP = new HashMap<>();
 
@@ -68,7 +74,26 @@ final class CommandEngine {
         HELP.put("whoami", "whoami — информацию о пользователе");
         HELP.put("theme", "theme [gradient|light|dark] — тема оформления");
         HELP.put("run", "run <файл> — выполнить команды из файла");
-        HELP.put("clear", "clear — очистить экран");
+        HELP.put("clear", "cls / clear — очистить экран");
+        HELP.put("ren", "ren <файл> <новое имя> — переименовать");
+        HELP.put("attrib", "attrib <файл> — атрибуты файла");
+        HELP.put("where", "where <имя> — найти файл по имени");
+        HELP.put("ipconfig", "ipconfig [/all] — сетевые адреса и MAC");
+        HELP.put("ping", "ping <хост> — проверить доступность");
+        HELP.put("nslookup", "nslookup <домен> — запрос DNS");
+        HELP.put("netstat", "netstat — активные подключения и порты");
+        HELP.put("arp", "arp — таблица IP ↔ MAC");
+        HELP.put("getmac", "getmac — MAC-адреса адаптеров");
+        HELP.put("route", "route — таблица маршрутизации");
+        HELP.put("tasklist", "tasklist — запущенные процессы");
+        HELP.put("start", "start <пакет> — запустить приложение");
+        HELP.put("vol", "vol — метки и размеры хранилищ");
+        HELP.put("systeminfo", "systeminfo — сводка об устройстве");
+        HELP.put("ver", "ver — версия Android");
+        HELP.put("color", "color <код> — цвет текста (0a, 0c, 0f)");
+        HELP.put("set", "set [имя=значение] — переменные окружения");
+        HELP.put("sleep", "sleep <сек> — пауза");
+        HELP.put("exit", "exit — выйти из приложения");
     }
 
     CommandEngine(Host host, File root) {
@@ -112,7 +137,26 @@ final class CommandEngine {
         history.add(trimmed);
         List<String> parts = tokenize(trimmed);
         String command = parts.get(0).toLowerCase();
-        List<String> args = parts.subList(1, parts.size());
+        command = switch (command) {
+            case "dir" -> "ls";
+            case "md" -> "mkdir";
+            case "rd", "rmdir" -> "rm";
+            case "del", "erase" -> "rm";
+            case "type" -> "cat";
+            case "findstr" -> "grep";
+            case "ren", "rename" -> "ren";
+            case "cls" -> "clear";
+            case "ver" -> "ver";
+            default -> command;
+        };
+        List<String> args = new ArrayList<>();
+        for (String part : parts.subList(1, parts.size())) {
+            String expanded = part;
+            for (Map.Entry<String, String> entry : env.entrySet()) {
+                expanded = expanded.replace("%" + entry.getKey() + "%", entry.getValue());
+            }
+            args.add(expanded);
+        }
 
         try {
             return switch (command) {
@@ -151,6 +195,29 @@ final class CommandEngine {
                 case "clear" -> {
                     host.clear();
                     yield "";
+                }
+                case "ren" -> rename(args);
+                case "attrib" -> attrib(args);
+                case "where" -> where(args);
+                case "ipconfig" -> ipconfig(args);
+                case "ping" -> ping(args);
+                case "nslookup" -> nslookup(args);
+                case "netstat" -> netstat();
+                case "arp" -> arp();
+                case "getmac" -> getmac();
+                case "route" -> route();
+                case "tasklist" -> tasklist();
+                case "start" -> startApp(args);
+                case "vol" -> vol();
+                case "systeminfo" -> systemInfo();
+                case "ver" -> "Android " + android.os.Build.VERSION.RELEASE
+                        + " (API " + android.os.Build.VERSION.SDK_INT + ")";
+                case "color" -> color(args);
+                case "set" -> setEnv(args);
+                case "sleep" -> sleep(args);
+                case "exit" -> {
+                    host.exit();
+                    yield "Выход...";
                 }
                 default -> "Неизвестная команда: " + command + "\nВведи `help` для списка команд.";
             };
@@ -435,5 +502,269 @@ final class CommandEngine {
             out.append("$ ").append(line).append('\n').append(run(line)).append('\n');
         }
         return out.toString().trim();
+    }
+
+    private String rename(List<String> args) throws IOException {
+        if (args.size() < 2) throw new IOException("Использование: ren <файл> <новое имя>");
+        File file = resolve(args.get(0));
+        File target = new File(file.getParentFile(), args.get(1));
+        if (!file.renameTo(target)) throw new IOException("Не удалось переименовать");
+        return "Переименовано: " + target.getName();
+    }
+
+    private String attrib(List<String> args) throws IOException {
+        File file = resolve(require(args, 0, "attrib <файл>"));
+        return file.getName()
+                + "\nТип: " + (file.isDirectory() ? "папка" : "файл")
+                + "\nЧтение: " + file.canRead()
+                + "\nЗапись: " + file.canWrite()
+                + "\nИсполнение: " + file.canExecute()
+                + "\nСкрытый: " + file.getName().startsWith(".");
+    }
+
+    private String where(List<String> args) throws IOException {
+        String name = require(args, 0, "where <имя>");
+        List<File> found = Fs.search(root, name, 100);
+        if (found.isEmpty()) return "Ничего не найдено";
+        StringBuilder out = new StringBuilder();
+        for (File file : found) out.append(file.getAbsolutePath()).append('\n');
+        return out.toString().trim();
+    }
+
+    private String ipconfig(List<String> args) {
+        StringBuilder out = new StringBuilder();
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> interfaces =
+                    java.net.NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                java.net.NetworkInterface ni = interfaces.nextElement();
+                if (!args.contains("/all") && (ni.isLoopback() || !ni.isUp())) continue;
+                out.append(ni.getName()).append("  ").append(ni.getDisplayName()).append('\n');
+                java.util.Enumeration<java.net.InetAddress> addresses = ni.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    java.net.InetAddress address = addresses.nextElement();
+                    out.append("  IP: ").append(address.getHostAddress()).append('\n');
+                }
+                byte[] mac = ni.getHardwareAddress();
+                if (mac != null) {
+                    StringBuilder hex = new StringBuilder();
+                    for (byte b : mac) hex.append(String.format("%02X-", b));
+                    if (hex.length() > 0) hex.setLength(hex.length() - 1);
+                    out.append("  MAC: ").append(hex).append('\n');
+                }
+            }
+        } catch (Exception e) {
+            return "Ошибка: " + e.getMessage();
+        }
+        return out.length() == 0 ? "Сетевые интерфейсы не найдены" : out.toString().trim();
+    }
+
+    private String ping(List<String> args) throws IOException {
+        String host = require(args, 0, "ping <хост>");
+        StringBuilder out = new StringBuilder("Ping " + host + ":\n");
+        try {
+            java.net.InetAddress address = java.net.InetAddress.getByName(host);
+            out.append("Адрес: ").append(address.getHostAddress()).append('\n');
+            for (int i = 0; i < 4; i++) {
+                long start = System.currentTimeMillis();
+                boolean reachable = address.isReachable(1500);
+                long ms = System.currentTimeMillis() - start;
+                out.append(reachable ? "Ответ от " : "Таймаут: ")
+                        .append(address.getHostAddress()).append(": ")
+                        .append(ms).append(" мс\n");
+            }
+        } catch (Exception e) {
+            return "Ошибка: " + e.getMessage();
+        }
+        return out.toString().trim();
+    }
+
+    private String nslookup(List<String> args) throws IOException {
+        String host = require(args, 0, "nslookup <домен>");
+        try {
+            java.net.InetAddress[] addresses = java.net.InetAddress.getAllByName(host);
+            StringBuilder out = new StringBuilder("DNS: " + host + "\n");
+            for (java.net.InetAddress address : addresses) {
+                out.append(address.getHostAddress()).append('\n');
+            }
+            return out.toString().trim();
+        } catch (Exception e) {
+            return "Ошибка DNS: " + e.getMessage();
+        }
+    }
+
+    private String netstat() {
+        StringBuilder out = new StringBuilder("Активные соединения (tcp):\n");
+        try {
+            for (String fileName : new String[]{"/proc/net/tcp", "/proc/net/tcp6"}) {
+                List<String> lines = Fs.readLines(new File(fileName));
+                for (int i = 1; i < lines.size() && i < 60; i++) {
+                    String[] parts = lines.get(i).trim().split("\\s+");
+                    if (parts.length < 4) continue;
+                    String[] local = parts[1].split(":");
+                    int port = Integer.parseInt(local[1], 16);
+                    int state = Integer.parseInt(parts[3], 16);
+                    String status = state == 1 ? "ESTABLISHED"
+                            : state == 2 ? "SYN_SENT" : state == 10 ? "LISTEN" : "state=" + state;
+                    out.append("tcp  :").append(port).append("  ").append(status).append('\n');
+                }
+            }
+        } catch (Exception e) {
+            return "Не удалось прочитать /proc/net: " + e.getMessage();
+        }
+        return out.toString().trim();
+    }
+
+    private String arp() {
+        try {
+            List<String> lines = Fs.readLines(new File("/proc/net/arp"));
+            if (lines.isEmpty()) return "Таблица ARP пуста";
+            return String.join("\n", lines).trim();
+        } catch (Exception e) {
+            return "Ошибка: " + e.getMessage();
+        }
+    }
+
+    private String getmac() {
+        StringBuilder out = new StringBuilder();
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> interfaces =
+                    java.net.NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                java.net.NetworkInterface ni = interfaces.nextElement();
+                byte[] mac = ni.getHardwareAddress();
+                if (mac == null) continue;
+                StringBuilder hex = new StringBuilder();
+                for (byte b : mac) hex.append(String.format("%02X-", b));
+                hex.setLength(hex.length() - 1);
+                out.append(ni.getName()).append(": ").append(hex).append('\n');
+            }
+        } catch (Exception e) {
+            return "Ошибка: " + e.getMessage();
+        }
+        return out.length() == 0 ? "MAC не найден" : out.toString().trim();
+    }
+
+    private String route() {
+        try {
+            List<String> lines = Fs.readLines(new File("/proc/net/route"));
+            if (lines.isEmpty()) return "Таблица маршрутов пуста";
+            return String.join("\n", lines).trim();
+        } catch (Exception e) {
+            return "Ошибка: " + e.getMessage();
+        }
+    }
+
+    private String tasklist() {
+        try {
+            android.app.ActivityManager manager = (android.app.ActivityManager)
+                    host.context().getSystemService(Context.ACTIVITY_SERVICE);
+            List<android.app.ActivityManager.RunningAppProcessInfo> processes =
+                    manager.getRunningAppProcesses();
+            if (processes == null) return "Список процессов недоступен";
+            StringBuilder out = new StringBuilder("PID    PROCESS\n");
+            for (android.app.ActivityManager.RunningAppProcessInfo info : processes) {
+                out.append(info.pid).append("  ").append(info.processName).append('\n');
+            }
+            return out.toString().trim();
+        } catch (Exception e) {
+            return "Ошибка: " + e.getMessage();
+        }
+    }
+
+    private String startApp(List<String> args) throws IOException {
+        String name = require(args, 0, "start <пакет или имя>");
+        android.content.Intent intent = host.context().getPackageManager()
+                .getLaunchIntentForPackage(name);
+        if (intent == null) {
+            android.content.Intent search = host.context().getPackageManager()
+                    .getLaunchIntentForPackage(name.contains(".") ? name : "com.neymis." + name);
+            intent = search;
+        }
+        if (intent == null) return "Приложение не найдено: " + name;
+        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+        host.context().startActivity(intent);
+        return "Запуск: " + name;
+    }
+
+    private String vol() {
+        StringBuilder out = new StringBuilder();
+        File[] roots = {new File("/storage/emulated/0"), root, getExternalFilesDir()};
+        for (File path : roots) {
+            if (path == null || !path.exists()) continue;
+            try {
+                android.os.StatFs stat = new android.os.StatFs(path.getPath());
+                out.append(path.getAbsolutePath())
+                        .append("  всего ").append(Fs.human(stat.getTotalBytes()))
+                        .append("  свободно ").append(Fs.human(stat.getAvailableBytes()))
+                        .append('\n');
+            } catch (Exception ignored) {
+            }
+        }
+        return out.length() == 0 ? "Хранилища не найдены" : out.toString().trim();
+    }
+
+    private File getExternalFilesDir() {
+        return host.context().getExternalFilesDir(null);
+    }
+
+    private String systemInfo() {
+        Runtime runtime = Runtime.getRuntime();
+        android.os.StatFs stat = new android.os.StatFs(root.getPath());
+        long uptime = android.os.SystemClock.elapsedRealtime() / 1000;
+        return "Устройство: " + android.os.Build.MODEL
+                + "\nПроизводитель: " + android.os.Build.MANUFACTURER
+                + "\nAndroid: " + android.os.Build.VERSION.RELEASE
+                + " (API " + android.os.Build.VERSION.SDK_INT + ")"
+                + "\nАрхитектура: " + android.os.Build.SUPPORTED_ABIS[0]
+                + "\nПроцессоров: " + runtime.availableProcessors()
+                + "\nПамять JVM: " + Fs.human(runtime.maxMemory())
+                + "\nХранилище: " + Fs.human(stat.getTotalBytes())
+                + " (свободно " + Fs.human(stat.getAvailableBytes()) + ")"
+                + "\nВремя работы: " + (uptime / 3600) + " ч " + (uptime % 3600) / 60 + " мин"
+                + "\nПуть пользователя: " + root.getAbsolutePath();
+    }
+
+    private String color(List<String> args) throws IOException {
+        String code = require(args, 0, "color <0a|0c|0f>");
+        host.setColor(code);
+        return "Цвет: " + code;
+    }
+
+    private String setEnv(List<String> args) {
+        if (args.isEmpty()) {
+            if (env.isEmpty()) return "Переменные не заданы";
+            StringBuilder out = new StringBuilder();
+            for (Map.Entry<String, String> entry : env.entrySet()) {
+                out.append(entry.getKey()).append("=").append(entry.getValue()).append('\n');
+            }
+            return out.toString().trim();
+        }
+        String expression = String.join(" ", args);
+        int equals = expression.indexOf('=');
+        if (equals < 0) {
+            String value = env.get(expression);
+            return value == null ? "Переменная не найдена: " + expression : expression + "=" + value;
+        }
+        String key = expression.substring(0, equals).trim();
+        String value = expression.substring(equals + 1).trim();
+        if (value.isEmpty()) {
+            env.remove(key);
+            return "Переменная удалена: " + key;
+        }
+        env.put(key, value);
+        return key + "=" + value;
+    }
+
+    private String sleep(List<String> args) throws IOException {
+        String value = require(args, 0, "sleep <сек>");
+        int seconds = Integer.parseInt(value);
+        if (seconds < 0 || seconds > 60) throw new IOException("Укажите 0–60 секунд");
+        try {
+            Thread.sleep(seconds * 1000L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return "Готово";
     }
 }

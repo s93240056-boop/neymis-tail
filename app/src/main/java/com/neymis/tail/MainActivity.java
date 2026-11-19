@@ -43,6 +43,7 @@ public class MainActivity extends AppCompatActivity implements CommandEngine.Hos
         output = findViewById(R.id.output);
         scroll = findViewById(R.id.outputScroll);
         input = findViewById(R.id.input);
+        applyColor(prefs.getString("color", "0f"));
 
         engine = new CommandEngine(this, Environment.getExternalStorageDirectory());
         print("Neymis Tail 1.0 — консоль для Android");
@@ -185,6 +186,29 @@ public class MainActivity extends AppCompatActivity implements CommandEngine.Hos
     public void applyTheme(int theme) {
         prefs.edit().putInt("theme", theme).apply();
         recreate();
+    }
+
+    private void applyColor(String code) {
+        int color;
+        switch (code == null ? "" : code) {
+            case "0a" -> color = 0xFF69F0AE;
+            case "0c" -> color = 0xFFFF8A80;
+            case "0e" -> color = 0xFFB0BEC5;
+            case "0b" -> color = 0xFF80DEEA;
+            default -> color = 0xFFE8EAF6;
+        }
+        output.setTextColor(color);
+    }
+
+    @Override
+    public void setColor(String code) {
+        prefs.edit().putString("color", code).apply();
+        runOnUiThread(() -> applyColor(code));
+    }
+
+    @Override
+    public void exit() {
+        runOnUiThread(this::finish);
     }
 
     private void requestStorageAccess() {
