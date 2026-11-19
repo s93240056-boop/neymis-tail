@@ -65,7 +65,7 @@ final class CommandEngine {
 
     static {
         HELP.put("help", "help [команда] — список команд или справка по команде");
-        HELP.put("apps", "apps — приложения линейки Neymis");
+        HELP.put("neymis", "neymis — приложения линейки Neymis");
         HELP.put("ls", "ls [путь] — список файлов и папок");
         HELP.put("cd", "cd [путь] — перейти в папку (.. — наверх)");
         HELP.put("pwd", "pwd — текущий путь");
@@ -262,7 +262,7 @@ final class CommandEngine {
         try {
             return switch (command) {
                 case "help", "man" -> help(args);
-                case "apps" -> {
+                case "neymis" -> {
                     StringBuilder list = new StringBuilder();
                     for (String name : Apps.NAMES) list.append(name).append('\n');
                     yield list.toString().trim();
