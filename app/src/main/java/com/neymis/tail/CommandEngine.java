@@ -3,6 +3,7 @@ package com.neymis.tail;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
@@ -33,6 +34,20 @@ final class CommandEngine {
         void setColor(String code);
 
         void exit();
+
+        String pref(String key, String def);
+
+        void setPref(String key, String value);
+
+        void stream(List<String> lines);
+
+        void setFontSize(int size);
+
+        void showQr(android.graphics.Bitmap bitmap);
+
+        void notify(String title, String text);
+
+        void schedule(long delayMs, String command);
     }
 
     private final Host host;
@@ -40,6 +55,9 @@ final class CommandEngine {
     private File cwd;
     private final List<String> history = new ArrayList<>();
     private final Map<String, String> env = new HashMap<>();
+    private final Map<String, String> aliases = new HashMap<>();
+    private String stdin = "";
+    private boolean greenMode;
 
     private static final Map<String, String> HELP = new HashMap<>();
 
@@ -94,12 +112,29 @@ final class CommandEngine {
         HELP.put("set", "set [имя=значение] — переменные окружения");
         HELP.put("sleep", "sleep <сек> — пауза");
         HELP.put("exit", "exit — выйти из приложения");
+        HELP.put("alias", "alias [имя=команда] — псевдонимы команд");
+        HELP.put("fetch", "fetch <url> [-o файл] — HTTP-запрос");
+        HELP.put("notify", "notify <заголовок> <текст> — уведомление");
+        HELP.put("at", "at <минуты> <команда> — отложенная задача");
+        HELP.put("clip", "clip set|get|file <текст|файл> — буфер обмена");
+        HELP.put("apk", "apk <пакет> — информация о приложении");
+        HELP.put("base64", "base64 <файл> — Base64-кодирование");
+        HELP.put("xxd", "xxd <файл> — hex-дамп");
+        HELP.put("qr", "qr <текст> — показать QR-код");
+        HELP.put("font", "font <размер> — размер шрифта консоли");
+        HELP.put("dir/s", "dir/s — старый DOS-режим (пасхалка)");
     }
 
     CommandEngine(Host host, File root) {
         this.host = host;
         this.root = root;
         this.cwd = root;
+        String saved = host.pref("aliases", "");
+        for (String line : saved.split("\n")) {
+            if (line.isEmpty()) continue;
+            int equals = line.indexOf('=');
+            if (equals > 0) aliases.put(line.substring(0, equals), line.substring(equals + 1));
+        }
     }
 
     File cwd() {
@@ -134,9 +169,72 @@ final class CommandEngine {
     String run(String line) {
         String trimmed = line.trim();
         if (trimmed.isEmpty()) return "";
+
+        if (trimmed.equals("!!")) {
+            if (history.isEmpty()) return "История пуста";
+            trimmed = history.get(history.size() - 1);
+        } else if (trimmed.startsWith("!") && trimmed.length() > 1) {
+            try {
+                int number = Integer.parseInt(trimmed.substring(1));
+                if (number < 1 || number > history.size()) return "Нет команды №" + number;
+                trimmed = history.get(number - 1);
+            } catch (NumberFormatException ignored) {
+            }
+        }
         history.add(trimmed);
-        List<String> parts = tokenize(trimmed);
+
+        int appendAt = trimmed.indexOf(">>");
+        int writeAt = trimmed.indexOf(">");
+        boolean append = appendAt >= 0;
+        int redirectAt = append ? appendAt : writeAt;
+        if (redirectAt > 0) {
+            String left = trimmed.substring(0, redirectAt).trim();
+            String target = trimmed.substring(redirectAt + (append ? 2 : 1)).trim();
+            String result = runPipeline(left);
+            try {
+                File file = resolve(target);
+                if (append) {
+                    java.io.FileOutputStream out = new java.io.FileOutputStream(file, true);
+                    out.write(result.getBytes("UTF-8"));
+                    out.close();
+                } else {
+                    Fs.writeAll(file, result.getBytes("UTF-8"));
+                }
+                return "Записано: " + file.getAbsolutePath();
+            } catch (Exception e) {
+                return "Ошибка записи: " + e.getMessage();
+            }
+        }
+        return runPipeline(trimmed);
+    }
+
+    private String runPipeline(String line) {
+        if (!line.contains("|")) return executeSingle(line);
+        String output = "";
+        for (String segment : line.split("\\|")) {
+            stdin = output;
+            output = executeSingle(segment.trim());
+        }
+        stdin = "";
+        return output;
+    }
+
+    private String executeSingle(String line) {
+        List<String> parts = tokenize(line);
         String command = parts.get(0).toLowerCase();
+
+        if (command.equals("dir/s") || command.equals("dir", "/s")) {
+            return dirsCascade();
+        }
+
+        if (aliases.containsKey(command)) {
+            List<String> replacement = tokenize(aliases.get(command));
+            List<String> merged = new ArrayList<>(replacement);
+            merged.addAll(parts.subList(1, parts.size()));
+            parts = merged;
+            command = parts.get(0).toLowerCase();
+        }
+
         command = switch (command) {
             case "dir" -> "ls";
             case "md" -> "mkdir";
@@ -219,6 +317,16 @@ final class CommandEngine {
                     host.exit();
                     yield "Выход...";
                 }
+                case "alias" -> alias(args);
+                case "fetch" -> fetch(args);
+                case "notify" -> notify(args);
+                case "at" -> schedule(args);
+                case "clip" -> clip(args);
+                case "apk" -> apkInfo(args);
+                case "base64" -> base64(args);
+                case "xxd" -> xxd(args);
+                case "qr" -> qr(args);
+                case "font" -> font(args);
                 default -> "Неизвестная команда: " + command + "\nВведи `help` для списка команд.";
             };
         } catch (Exception e) {
@@ -294,7 +402,8 @@ final class CommandEngine {
     }
 
     private String cat(List<String> args) throws IOException {
-        File file = resolve(require(args, 0, "cat <файл>"));
+        if (args.isEmpty()) return stdin;
+        File file = resolve(args.get(0));
         if (!file.isFile()) throw new IOException("Нет файла: " + file.getName());
         return new String(Fs.readAll(file), "UTF-8");
     }
@@ -309,9 +418,10 @@ final class CommandEngine {
     }
 
     private String grep(List<String> args) throws IOException {
-        if (args.size() < 2) throw new IOException("Использование: grep <текст> <файл>");
-        File file = resolve(args.get(1));
-        List<String> lines = Fs.readLines(file);
+        if (args.isEmpty()) throw new IOException("Использование: grep <текст> [файл]");
+        List<String> lines = args.size() > 1
+                ? Fs.readLines(resolve(args.get(1)))
+                : Arrays.asList(stdin.split("\n"));
         List<String> found = new ArrayList<>();
         String needle = args.get(0).toLowerCase();
         for (String line : lines) {
@@ -321,8 +431,9 @@ final class CommandEngine {
     }
 
     private String head(List<String> args, boolean first) throws IOException {
-        File file = resolve(require(args, 0, (first ? "head" : "tail") + " <файл> [n]"));
-        List<String> lines = Fs.readLines(file);
+        List<String> lines = args.isEmpty()
+                ? Arrays.asList(stdin.split("\n"))
+                : Fs.readLines(resolve(args.get(0)));
         int count = 10;
         if (args.size() > 1) count = Integer.parseInt(args.get(1));
         count = Math.min(count, lines.size());
@@ -332,7 +443,10 @@ final class CommandEngine {
     }
 
     private String wc(List<String> args) throws IOException {
-        File file = resolve(require(args, 0, "wc <файл>"));
+        if (args.isEmpty()) {
+            return stdin.split("\n", -1).length + " строк · " + Fs.human(stdin.getBytes("UTF-8").length);
+        }
+        File file = resolve(args.get(0));
         List<String> lines = Fs.readLines(file);
         return lines.size() + " строк · " + Fs.human(file.length());
     }
@@ -496,12 +610,60 @@ final class CommandEngine {
     private String runScript(List<String> args) throws IOException {
         File file = resolve(require(args, 0, "run <файл>"));
         List<String> lines = Fs.readLines(file);
-        StringBuilder out = new StringBuilder();
-        for (String line : lines) {
-            if (line.trim().isEmpty() || line.trim().startsWith("#")) continue;
-            out.append("$ ").append(line).append('\n').append(run(line)).append('\n');
+        List<String> output = new ArrayList<>();
+        Map<String, Integer> labels = new HashMap<>();
+        for (int index = 0; index < lines.size(); index++) {
+            String line = lines.get(index).trim();
+            if (line.length() > 1 && line.endsWith(":")) {
+                labels.put(line.substring(0, line.length() - 1), index);
+            }
         }
-        return out.toString().trim();
+        int index = 0;
+        while (index < lines.size()) {
+            String raw = lines.get(index).trim();
+            String lower = raw.toLowerCase();
+            if (raw.isEmpty() || raw.startsWith("#") || raw.endsWith(":")) {
+                index++;
+                continue;
+            }
+            if (lower.startsWith("goto ")) {
+                Integer target = labels.get(raw.substring(5).trim());
+                if (target == null) {
+                    output.add("Нет метки: " + raw.substring(5).trim());
+                    index++;
+                } else {
+                    index = target + 1;
+                }
+                continue;
+            }
+            if (lower.startsWith("if ")) {
+                String[] parts = raw.split("\\s+", 4);
+                if (parts.length >= 4) {
+                    boolean negative = parts[1].equals("!exists");
+                    boolean condition = resolve(parts[2]).exists() != negative;
+                    if (condition) output.add("$ " + parts[3] + "\n" + run(parts[3]));
+                }
+                index++;
+                continue;
+            }
+            if (lower.startsWith("for ")) {
+                int doIndex = raw.indexOf(" do ");
+                if (doIndex > 0) {
+                    String[] head = raw.substring(4, doIndex).trim().split("\\s+");
+                    String variable = head[0];
+                    String command = raw.substring(doIndex + 4).trim();
+                    for (int value = 1; value < head.length; value++) {
+                        env.put(variable, head[value]);
+                        output.add("$ " + command + "\n" + run(command));
+                    }
+                }
+                index++;
+                continue;
+            }
+            output.add("$ " + raw + "\n" + run(raw));
+            index++;
+        }
+        return String.join("\n", output);
     }
 
     private String rename(List<String> args) throws IOException {
@@ -763,7 +925,8 @@ final class CommandEngine {
     }
 
     private String color(List<String> args) throws IOException {
-        String code = require(args, 0, "color <0a|0c|0f>");
+        String code = require(args, 0, "color <0a|0c|0f|2>");
+        greenMode = code.equalsIgnoreCase("2") || code.equalsIgnoreCase("0a");
         host.setColor(code);
         return "Цвет: " + code;
     }
@@ -803,5 +966,226 @@ final class CommandEngine {
             Thread.currentThread().interrupt();
         }
         return "Готово";
+    }
+
+    private String alias(List<String> args) {
+        if (args.isEmpty()) {
+            if (aliases.isEmpty()) return "Псевдонимы не заданы";
+            List<String> lines = new ArrayList<>();
+            for (Map.Entry<String, String> entry : aliases.entrySet()) {
+                lines.add(entry.getKey() + "=" + entry.getValue());
+            }
+            Collections.sort(lines);
+            return String.join("\n", lines);
+        }
+        String expression = String.join(" ", args);
+        int equals = expression.indexOf('=');
+        if (equals < 0) {
+            String value = aliases.get(expression);
+            return value == null ? "Псевдонима нет: " + expression : expression + "=" + value;
+        }
+        String key = expression.substring(0, equals).trim();
+        String value = expression.substring(equals + 1).trim();
+        if (value.isEmpty()) {
+            aliases.remove(key);
+        } else {
+            aliases.put(key, value);
+        }
+        StringBuilder saved = new StringBuilder();
+        for (Map.Entry<String, String> entry : aliases.entrySet()) {
+            saved.append(entry.getKey()).append('=').append(entry.getValue()).append('\n');
+        }
+        host.setPref("aliases", saved.toString());
+        return aliases.containsKey(key) ? key + "=" + aliases.get(key) : "Удалено: " + key;
+    }
+
+    private String fetch(List<String> args) throws IOException {
+        String url = require(args, 0, "fetch <url> [-o файл]");
+        File outputFile = null;
+        if (args.size() > 2 && args.get(1).equals("-o")) outputFile = resolve(args.get(2));
+        java.net.HttpURLConnection connection =
+                (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+        connection.setConnectTimeout(10000);
+        connection.setReadTimeout(15000);
+        connection.setRequestMethod("GET");
+        int status = connection.getResponseCode();
+        java.io.InputStream stream = status < 400 ? connection.getInputStream()
+                : connection.getErrorStream();
+        ByteArrayOutputStream data = new ByteArrayOutputStream();
+        if (stream != null) {
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = stream.read(buffer)) > 0) data.write(buffer, 0, count);
+            stream.close();
+        }
+        byte[] bytes = data.toByteArray();
+        if (outputFile != null) {
+            Fs.writeAll(outputFile, bytes);
+            return "HTTP " + status + " · сохранено: " + outputFile.getAbsolutePath()
+                    + " (" + Fs.human(bytes.length) + ")";
+        }
+        String text = new String(bytes, "UTF-8");
+        return "HTTP " + status + "\n" + (text.length() > 8000 ? text.substring(0, 8000) : text);
+    }
+
+    private String notify(List<String> args) throws IOException {
+        if (args.isEmpty()) throw new IOException("Использование: notify <заголовок> <текст>");
+        String title = args.get(0);
+        String text = args.size() > 1 ? String.join(" ", args.subList(1, args.size())) : "";
+        host.notify(title, text);
+        return "Уведомление отправлено";
+    }
+
+    private String schedule(List<String> args) throws IOException {
+        if (args.size() < 2) throw new IOException("Использование: at <минуты> <команда>");
+        int minutes;
+        try {
+            minutes = Integer.parseInt(args.get(0));
+        } catch (NumberFormatException e) {
+            throw new IOException("Минуты должны быть числом");
+        }
+        if (minutes < 1 || minutes > 1440) throw new IOException("Укажите 1–1440 минут");
+        String command = String.join(" ", args.subList(1, args.size()));
+        host.schedule(minutes * 60 * 1000L, command);
+        return "Задача через " + minutes + " мин: " + command;
+    }
+
+    private String clip(List<String> args) throws IOException {
+        if (args.isEmpty()) throw new IOException("Использование: clip set|get|file <значение>");
+        String action = args.get(0).toLowerCase();
+        android.content.ClipboardManager manager = (android.content.ClipboardManager)
+                host.context().getSystemService(Context.CLIPBOARD_SERVICE);
+        if (manager == null) return "Буфер обмена недоступен";
+        if (action.equals("set") || action.equals("file")) {
+            if (args.size() < 2) throw new IOException("Нет значения");
+            String value = action.equals("file")
+                    ? new String(Fs.readAll(resolve(args.get(1))), "UTF-8")
+                    : String.join(" ", args.subList(1, args.size()));
+            manager.setPrimaryClip(android.content.ClipData.newPlainText("Neymis Tail", value));
+            return "Скопировано (" + value.length() + " симв.)";
+        }
+        if (action.equals("get")) {
+            android.content.ClipData clip = manager.getPrimaryClip();
+            if (clip == null || clip.getItemCount() == 0) return "Буфер пуст";
+            CharSequence text = clip.getItemAt(0).getText();
+            return text == null ? "В буфере не текст" : text.toString();
+        }
+        return "Использование: clip set|get|file <значение>";
+    }
+
+    private String apkInfo(List<String> args) throws IOException {
+        String packageName = require(args, 0, "apk <пакет>");
+        try {
+            android.content.pm.PackageInfo info = host.context().getPackageManager()
+                    .getPackageInfo(packageName, android.content.pm.PackageManager.GET_PERMISSIONS);
+            String label = host.context().getPackageManager()
+                    .getApplicationLabel(info.applicationInfo).toString();
+            StringBuilder out = new StringBuilder("Приложение: " + label
+                    + "\nПакет: " + info.packageName
+                    + "\nВерсия: " + info.versionName + " (" + info.versionCode + ")"
+                    + "\nУстановлено: " + new SimpleDateFormat("dd.MM.yyyy", Locale.getDefault())
+                    .format(new Date(info.firstInstallTime))
+                    + "\nПуть APK: " + info.applicationInfo.sourceDir);
+            if (info.requestedPermissions != null) {
+                out.append("\nРазрешения (").append(info.requestedPermissions.length).append("):\n");
+                for (String permission : info.requestedPermissions) {
+                    out.append("  ").append(permission).append('\n');
+                }
+            }
+            return out.toString().trim();
+        } catch (Exception e) {
+            return "Приложение не найдено: " + packageName;
+        }
+    }
+
+    private String base64(List<String> args) throws IOException {
+        byte[] data = stdin.isEmpty()
+                ? Fs.readAll(resolve(require(args, 0, "base64 <файл>")))
+                : stdin.getBytes("UTF-8");
+        return android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP);
+    }
+
+    private String xxd(List<String> args) throws IOException {
+        String source = args.isEmpty() ? stdin : new String(
+                Fs.readAll(resolve(args.get(0))), "UTF-8");
+        byte[] data = source.getBytes("UTF-8");
+        int limit = Math.min(data.length, 512);
+        StringBuilder out = new StringBuilder();
+        for (int offset = 0; offset < limit; offset += 16) {
+            out.append(String.format("%04x  ", offset));
+            for (int i = 0; i < 16; i++) {
+                out.append(offset + i < limit
+                        ? String.format("%02x ", data[offset + i]) : "   ");
+            }
+            out.append(" ");
+            for (int i = 0; i < 16 && offset + i < limit; i++) {
+                byte b = data[offset + i];
+                out.append(b >= 32 && b < 127 ? (char) b : '.');
+            }
+            out.append('\n');
+        }
+        return out.toString().trim() + (data.length > limit ? "\n… (" + data.length + " байт)" : "");
+    }
+
+    private String qr(List<String> args) throws IOException {
+        String text = require(args, 0, "qr <текст>");
+        try {
+            com.google.zxing.qrcode.QRCodeWriter writer =
+                    new com.google.zxing.qrcode.QRCodeWriter();
+            com.google.zxing.common.BitMatrix matrix = writer.encode(text,
+                    com.google.zxing.BarcodeFormat.QR_CODE, 512, 512);
+            android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(
+                    512, 512, android.graphics.Bitmap.Config.ARGB_8888);
+            for (int x = 0; x < 512; x++) {
+                for (int y = 0; y < 512; y++) {
+                    bitmap.setPixel(x, y, matrix.get(x, y) ? 0xFF000000 : 0xFFFFFFFF);
+                }
+            }
+            host.showQr(bitmap);
+            return "QR-код для: " + text;
+        } catch (Exception e) {
+            return "Не удалось создать QR: " + e.getMessage();
+        }
+    }
+
+    private String font(List<String> args) throws IOException {
+        String value = require(args, 0, "font <размер>");
+        int size = Integer.parseInt(value);
+        if (size < 8 || size > 30) throw new IOException("Укажите размер 8–30");
+        host.setFontSize(size);
+        host.setPref("font_size", String.valueOf(size));
+        return "Размер шрифта: " + size;
+    }
+
+    private String dirsCascade() {
+        List<String> lines = new ArrayList<>();
+        String symbols = "░▒▓█▓▒░◆◇○●▪▫";
+        lines.add(" Volume in drive C has no label");
+        lines.add(" Volume Serial Number is 2A00-56C0");
+        lines.add("");
+        lines.add(" Directory of " + root.getAbsolutePath());
+        lines.add("");
+        List<File> all = Fs.search(root, "", 1500);
+        long totalBytes = 0;
+        int fileCount = 0;
+        SimpleDateFormat date = new SimpleDateFormat("dd.MM.yyyy  HH:mm", Locale.getDefault());
+        for (File file : all) {
+            if (!file.isFile()) continue;
+            long size = file.length();
+            totalBytes += size;
+            fileCount++;
+            String noise = symbols.charAt((int) (Math.abs(file.getName().hashCode()) % symbols.length()));
+            lines.add(String.format("%-28s %12d  %s  %s",
+                    file.getName().substring(0, Math.min(28, file.getName().length())),
+                    size, date.format(new Date(file.lastModified())), noise));
+        }
+        lines.add("");
+        lines.add("       " + fileCount + " File(s)  " + totalBytes + " bytes");
+        android.os.StatFs stat = new android.os.StatFs(root.getPath());
+        lines.add("       " + stat.getAvailableBytes() + " bytes free");
+        lines.add("");
+        lines.add(greenMode ? "C:\\>" : "Directory listing complete.");
+        host.stream(lines);
+        return "";
     }
 }

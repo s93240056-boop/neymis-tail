@@ -1,5 +1,9 @@
 package com.neymis.tail;
 
+import android.app.AlarmManager;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -12,11 +16,14 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.NotificationCompat;
 import androidx.core.content.FileProvider;
 
 import java.io.File;
@@ -44,6 +51,7 @@ public class MainActivity extends AppCompatActivity implements CommandEngine.Hos
         scroll = findViewById(R.id.outputScroll);
         input = findViewById(R.id.input);
         applyColor(prefs.getString("color", "0f"));
+        output.setTextSize(prefs.getInt("font_size", 13));
 
         engine = new CommandEngine(this, Environment.getExternalStorageDirectory());
         print("Neymis Tail 1.0 — консоль для Android");
@@ -112,6 +120,22 @@ public class MainActivity extends AppCompatActivity implements CommandEngine.Hos
         });
 
         requestStorageAccess();
+        requestNotificationPermission();
+
+        String scheduled = getIntent().getStringExtra("run_cmd");
+        if (scheduled != null && !scheduled.isEmpty()) {
+            print("$ " + scheduled);
+            String result = engine.run(scheduled);
+            if (!result.isEmpty()) print(result);
+        }
+    }
+
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 7);
+        }
     }
 
     private void hideHint() {
@@ -209,6 +233,88 @@ public class MainActivity extends AppCompatActivity implements CommandEngine.Hos
     @Override
     public void exit() {
         runOnUiThread(this::finish);
+    }
+
+    @Override
+    public String pref(String key, String def) {
+        return prefs.getString(key, def);
+    }
+
+    @Override
+    public void setPref(String key, String value) {
+        prefs.edit().putString(key, value).apply();
+    }
+
+    @Override
+    public void stream(java.util.List<String> lines) {
+        runOnUiThread(() -> new Thread(() -> {
+            for (String line : lines) {
+                runOnUiThread(() -> print(line));
+                try {
+                    Thread.sleep(18);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }, "neymis-stream").start());
+    }
+
+    @Override
+    public void setFontSize(int size) {
+        runOnUiThread(() -> output.setTextSize(size));
+    }
+
+    @Override
+    public void showQr(android.graphics.Bitmap bitmap) {
+        runOnUiThread(() -> {
+            ImageView image = new ImageView(this);
+            image.setImageBitmap(bitmap);
+            image.setAdjustViewBounds(true);
+            new AlertDialog.Builder(this).setTitle("QR-код").setView(image)
+                    .setPositiveButton("OK", null).show();
+        });
+    }
+
+    @Override
+    public void notify(String title, String text) {
+        final String channelId = "neymis_tail";
+        if (Build.VERSION.SDK_INT >= 26) {
+            NotificationManager manager =
+                    (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (manager != null && manager.getNotificationChannel(channelId) == null) {
+                NotificationChannel channel = new NotificationChannel(channelId,
+                        "Neymis Tail", NotificationManager.IMPORTANCE_DEFAULT);
+                manager.createNotificationChannel(channel);
+            }
+        }
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, channelId)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setAutoCancel(true);
+        NotificationManager manager =
+                (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager != null) manager.notify((int) System.currentTimeMillis(), builder.build());
+    }
+
+    @Override
+    public void schedule(long delayMs, String command) {
+        Intent intent = new Intent(this, TaskReceiver.class);
+        intent.putExtra("command", command);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= 31) flags |= PendingIntent.FLAG_IMMUTABLE;
+        PendingIntent pending = PendingIntent.getBroadcast(this,
+                (int) System.currentTimeMillis(), intent, flags);
+        AlarmManager manager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+        if (manager != null) {
+            long trigger = System.currentTimeMillis() + delayMs;
+            if (Build.VERSION.SDK_INT >= 23) {
+                manager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, pending);
+            } else {
+                manager.setExact(AlarmManager.RTC_WAKEUP, trigger, pending);
+            }
+        }
     }
 
     private void requestStorageAccess() {

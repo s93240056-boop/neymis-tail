@@ -34,8 +34,17 @@ Additional CMD-style commands (what makes sense on Android):
 | `vol`, `systeminfo`, `ver` | Device and storage info |
 | `color <0a\|0c\|0f>`, `set [NAME=value]`, `sleep <sec>`, `exit` | Console control |
 
-Features: command history with ↑/↓, Tab completion, coloured output, and a
-saved script feature (`run <file>` executes one command per line).
+**Shell 2.0**: pipelines (`cat a.txt | grep error | head 5`), redirects
+(`ls > list.txt`, `>>` to append), persistent `alias`, history expansion
+(`!!`, `!5`), and scripts with `if exists`, `for ... do` and `goto`/labels.
+
+**More commands**: `fetch <url> [-o file]`, `notify`, `at <minutes> <command>`,
+`clip set|get|file`, `apk <package>`, `base64`, `xxd`, `qr <text>`, `font <size>`.
+
+Easter egg: type `color 2` and then `dir/s` for a green DOS-style cascade over
+the real files on the device.
+
+Features: command history with ↑/↓, Tab completion, coloured output.
 
 Not implemented: Windows-only tools (sfc, dism, chkdsk, diskpart, sc, netsh,
 shutdown) — they require Windows APIs or root.
