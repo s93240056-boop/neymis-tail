@@ -6,3 +6,5 @@ dependencyResolutionManagement {
 }
 rootProject.name = "Neymis Tail"
 include(":app")
+
+include ':neymis-core'
