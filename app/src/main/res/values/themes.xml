@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@drawable/gradient_bg</item>
+        <item name="colorPrimary">#5E35B1</item>
+        <item name="colorAccent">#69F0AE</item>
+    </style>
+    <style name="AppTheme.Light" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorPrimary">#5E35B1</item>
+        <item name="colorAccent">#2E7D32</item>
+        <item name="android:windowBackground">#FFFFFFFF</item>
+    </style>
+    <style name="AppTheme.Dark" parent="Theme.AppCompat.NoActionBar">
+        <item name="colorPrimary">#311B92</item>
+        <item name="colorAccent">#69F0AE</item>
+        <item name="android:windowBackground">#FF0B0B10</item>
+    </style>
+</resources>
