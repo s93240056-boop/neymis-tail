@@ -29,6 +29,7 @@ public class MainActivity extends AppCompatActivity implements CommandEngine.Hos
     private TextView output;
     private ScrollView scroll;
     private EditText input;
+    private TextView hint;
     private int historyIndex;
     private String historyDraft;
 
@@ -94,13 +95,35 @@ public class MainActivity extends AppCompatActivity implements CommandEngine.Hos
             return false;
         });
 
+        hint = findViewById(R.id.hint);
+        if (!prefs.getBoolean("hint_shown", false)) {
+            hint.setVisibility(View.VISIBLE);
+            hint.setOnClickListener(v -> hideHint());
+        }
+
+        input.requestFocus();
+        input.post(() -> {
+            android.view.inputmethod.InputMethodManager manager =
+                    (android.view.inputmethod.InputMethodManager) getSystemService(
+                            Context.INPUT_METHOD_SERVICE);
+            if (manager != null) manager.showSoftInput(input,
+                    android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+        });
+
         requestStorageAccess();
+    }
+
+    private void hideHint() {
+        if (hint == null) return;
+        hint.setVisibility(View.GONE);
+        prefs.edit().putBoolean("hint_shown", true).apply();
     }
 
     private void submit() {
         String line = input.getText().toString();
         input.setText("");
         historyIndex = 0;
+        hideHint();
         if (line.trim().isEmpty()) return;
         print("$ " + line);
         String result = engine.run(line);
